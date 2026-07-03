@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 
 /* ============================================================
    HeyDoc — Design tokens
@@ -14,12 +14,12 @@ const T = {
 };
 
 const SEMANTIC = {
-  patient_information: { label: 'Patient info',       bg: '#e4e7e4', fg: '#3c4842' },
-  diagnosis:            { label: 'Diagnosis',           bg: '#fbe4da', fg: '#a3401f' },
-  medication_history:   { label: 'Medication',          bg: '#dcebfb', fg: '#1f5fa0' },
-  lab_reports:           { label: 'Lab report',          bg: '#fbe8cc', fg: '#a3650e' },
-  surgical_history:      { label: 'Surgical',             bg: '#eee4fb', fg: '#6a3fa0' },
-  follow_up_notes:       { label: 'Follow-up',            bg: '#dcf2e9', fg: '#0f6e56' },
+  patient_information: { label: 'Patient info', bg: '#e4e7e4', fg: '#3c4842' },
+  diagnosis: { label: 'Diagnosis', bg: '#fbe4da', fg: '#a3401f' },
+  medication_history: { label: 'Medication', bg: '#dcebfb', fg: '#1f5fa0' },
+  lab_reports: { label: 'Lab report', bg: '#fbe8cc', fg: '#a3650e' },
+  surgical_history: { label: 'Surgical', bg: '#eee4fb', fg: '#6a3fa0' },
+  follow_up_notes: { label: 'Follow-up', bg: '#dcf2e9', fg: '#0f6e56' },
 };
 
 const ROLE_COLOR = {
@@ -101,7 +101,10 @@ function Icon({ name, size = 18, color = 'currentColor' }) {
     flask: 'M9 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3l-5-11V2M9 14h6',
     building: 'M3 21h18M5 21V7l7-4 7 4v14M9 9h1M9 13h1M14 9h1M14 13h1M9 21v-4h6v4',
     chevronRight: 'M9 18l6-6-6-6',
+    chevronDown: 'M6 9l6 6 6-6',
     arrowRight: 'M5 12h14M12 5l7 7-7 7',
+    pill: 'M10.5 20.5 3.5 13.5a5 5 0 1 1 7-7l7 7a5 5 0 1 1-7 7zM7 10l7 7',
+    sparkle: 'M12 3v4M12 17v4M5 12H1M23 12h-4M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1',
   };
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -180,12 +183,193 @@ function EmptyState({ icon, title, sub }) {
   );
 }
 
+/* Subtle, unobtrusive footer disclaimer — kept out of the main reading flow */
 function AiNotice() {
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-start', background: T.amber50, border: `1px solid ${T.amber100}`, borderRadius: 10, padding: '10px 14px', fontSize: 12.5, color: T.amber600, marginTop: 14 }}>
-      <Icon name="shield" size={15} color={T.amber600} />
-      <span>AI-assisted information, not a diagnosis. For any concern, please contact your doctor directly.</span>
+    <div style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 11.5, color: T.ink500, marginTop: 8 }}>
+      <Icon name="shield" size={12} color={T.ink300} />
+      <span>AI-assisted information. Not a substitute for professional medical advice.</span>
     </div>
+  );
+}
+
+/* ============================================================
+   Chat response building blocks
+   ============================================================ */
+
+/* Strips backend/debug artifacts that should never reach the patient:
+   raw patient IDs, "====" separator rules, "Total: N" counters, and
+   collapses stray blank lines left behind once those are removed.
+   This is a presentation-layer safety net — it does not change what
+   the backend computed, only how the existing formatted string is
+   displayed. See server.py note: /chat can also be extended to return
+   the structured `metadata` object directly, which sidesteps needing
+   this cleanup at all. */
+function cleanAnswerText(raw) {
+  if (!raw) return '';
+  return raw
+    .split('\n')
+    .filter(line => {
+      const t = line.trim();
+      if (!t) return true;
+      if (/^=+$/.test(t)) return false;
+      if (/^-+$/.test(t)) return false;
+      if (/^total:\s*\d+$/i.test(t)) return false;
+      if (/^(patient|admission summary|medical timeline|medications|allergies|surgical history)\s*(—|-)\s*(patient_|doctor_)/i.test(t)) return false;
+      if (/^\[[\d]+ event/i.test(t)) return false;
+      return true;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function confidenceTier(pct) {
+  if (pct >= 80) return { emoji: '🟢', label: 'High confidence', bg: T.teal100, fg: T.teal700 };
+  if (pct >= 50) return { emoji: '🟡', label: 'Moderate confidence', bg: T.amber100, fg: T.amber600 };
+  return { emoji: '🔴', label: 'Needs verification', bg: T.coral100, fg: T.coral600 };
+}
+
+function ConfidenceBadge({ confidence, verified }) {
+  const [open, setOpen] = useState(false);
+  if (confidence == null) return null;
+  const tier = confidenceTier(confidence);
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, background: tier.bg, color: tier.fg,
+        border: 'none', borderRadius: 999, padding: '4px 10px 4px 8px', fontSize: 12, fontWeight: 700, cursor: 'pointer',
+      }}>
+        <span>{tier.emoji}</span>
+        <span>{tier.label}</span>
+        <Icon name="chevronDown" size={12} color={tier.fg} />
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, background: T.cream, border: `1px solid ${T.ink100}`, borderRadius: 10, padding: '10px 12px', fontSize: 12.5, color: T.ink700, maxWidth: 320 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+            <span style={{ fontWeight: 600 }}>Reliability</span>
+            <span>{confidence.toFixed(0)}%</span>
+          </div>
+          <div>
+            {confidence >= 80
+              ? 'Verified against your uploaded records.'
+              : confidence >= 50
+                ? 'Some information may require clinical confirmation.'
+                : 'Limited supporting evidence was found — please confirm with your care team.'}
+          </div>
+          <div style={{ marginTop: 6, color: verified ? T.teal700 : T.amber600, fontWeight: 600, fontSize: 11.5 }}>
+            {verified ? '✓ Cross-checked against source records' : '⚠ Could not be fully cross-checked'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourcesDisclosure({ sources }) {
+  const [open, setOpen] = useState(false);
+  if (!sources || !sources.length) return null;
+  return (
+    <div style={{ marginTop: 10 }}>
+      <button onClick={() => setOpen(o => !o)} style={{
+        display: 'inline-flex', alignItems: 'center', gap: 6, background: 'transparent', border: 'none',
+        color: T.ink500, fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: 0,
+      }}>
+        <Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} color={T.ink500} />
+        View supporting records ({sources.length})
+      </button>
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
+          {sources.map((s, i) => (
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: T.ink700, background: T.cream, borderRadius: 8, padding: '6px 10px' }}>
+              <Icon name="file" size={13} color={T.ink500} />
+              {s.name}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const LOADING_MESSAGES = [
+  'Analyzing medical records...',
+  'Retrieving supporting evidence...',
+  'Verifying clinical information...',
+  'Generating response...',
+];
+
+function ThinkingBubble() {
+  const [idx, setIdx] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setIdx(i => (i + 1) % LOADING_MESSAGES.length), 1200);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div style={{ alignSelf: 'flex-start', maxWidth: '78%' }}>
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10, background: T.cream, color: T.ink700,
+        padding: '11px 14px', borderRadius: 12, fontSize: 13.5,
+      }}>
+        <span style={{ display: 'flex', gap: 3 }}>
+          {[0, 1, 2].map(i => (
+            <span key={i} style={{
+              width: 5, height: 5, borderRadius: '50%', background: T.teal500,
+              animation: `heydocDotPulse 1s ${i * 0.15}s infinite ease-in-out`,
+            }} />
+          ))}
+        </span>
+        {LOADING_MESSAGES[idx]}
+      </div>
+      <style>{`@keyframes heydocDotPulse { 0%, 80%, 100% { opacity: .25; transform: scale(0.85); } 40% { opacity: 1; transform: scale(1); } }`}</style>
+    </div>
+  );
+}
+
+/* Clean card view for medication-shaped answers — mirrors the structured
+   `metadata.medications` list the backend already computes in
+   advanced_rag.py (get_medications), instead of the raw formatted string. */
+function MedicationCards({ medications }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {medications.map((m, i) => (
+        <div key={i} style={{ background: T.white, border: `1px solid ${T.ink100}`, borderRadius: 10, padding: '10px 14px' }}>
+          <div style={{ fontWeight: 700, fontSize: 13.5, color: T.ink900 }}>{m.name}</div>
+          <div style={{ fontSize: 12, color: T.ink500, marginTop: 2 }}>
+            {m.instructions || (m.date ? `Prescribed: ${m.date}` : 'From your uploaded records')}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* ============================================================
+   PATIENT — Dashboard / Upload / Ask / Appointments / Queue
+   ============================================================ */
+function PatientApp({ user, onLogout }) {
+  const [page, setPage] = useState('dashboard');
+  const docs = MOCK.documents[user.id] || [];
+  const myDocs = docs.filter(d => d.uploaded_by === user.id);
+  const careTeamDocs = docs.filter(d => d.uploaded_by !== user.id);
+  const myAppts = MOCK.appointments.filter(a => a.patientId === user.id);
+
+  const nav = [
+    { key: 'dashboard', label: 'Dashboard', icon: 'grid' },
+    { key: 'upload', label: 'Upload documents', icon: 'upload' },
+    { key: 'ask', label: 'Ask HeyDoc', icon: 'chat' },
+    { key: 'appointments', label: 'Appointments', icon: 'calendar' },
+    { key: 'queue', label: 'My queue', icon: 'clock' },
+  ];
+
+  return (
+    <Shell role="patient" userName={user.name} nav={nav} active={page} onNav={setPage} onLogout={onLogout}>
+      {page === 'dashboard' && <PatientDashboard docs={docs} appts={myAppts} onNav={setPage} />}
+      {page === 'upload' && <PatientUpload myDocs={myDocs} careTeamDocs={careTeamDocs} />}
+      {page === 'ask' && <AskHeyDoc patientId={user.id} />}
+      {page === 'appointments' && <PatientAppointments appts={myAppts} />}
+      {page === 'queue' && <PatientQueue appts={myAppts} />}
+    </Shell>
   );
 }
 
@@ -202,7 +386,7 @@ function Shell({ role, userName, nav, active, onNav, onLogout, children }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 10px', marginBottom: 18, background: T.cream, borderRadius: 10 }}>
           <div style={{ width: 32, height: 32, borderRadius: '50%', background: ROLE_COLOR[role], color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700 }}>
-            {userName.split(' ').map(w => w[0]).join('').slice(0,2)}
+            {userName.split(' ').map(w => w[0]).join('').slice(0, 2)}
           </div>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 600, color: T.ink900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{userName}</div>
@@ -268,7 +452,7 @@ function AuthScreen({ onSignedIn }) {
 
   function finishSignup() {
     const finalRole = role === 'staff' ? staffType : 'patient';
-    onSignedIn({ role: finalRole, name: form.name || 'New user', id: `${finalRole}_${Math.floor(Math.random()*900+100)}` });
+    onSignedIn({ role: finalRole, name: form.name || 'New user', id: `${finalRole}_${Math.floor(Math.random() * 900 + 100)}` });
   }
 
   function quickSignin(r) {
@@ -417,35 +601,6 @@ function AuthScreen({ onSignedIn }) {
   );
 }
 
-/* ============================================================
-   PATIENT — Dashboard / Upload / Ask / Appointments / Queue
-   ============================================================ */
-function PatientApp({ user, onLogout }) {
-  const [page, setPage] = useState('dashboard');
-  const docs = MOCK.documents[user.id] || [];
-  const myDocs = docs.filter(d => d.uploaded_by === user.id);
-  const careTeamDocs = docs.filter(d => d.uploaded_by !== user.id);
-  const myAppts = MOCK.appointments.filter(a => a.patientId === user.id);
-
-  const nav = [
-    { key: 'dashboard', label: 'Dashboard', icon: 'grid' },
-    { key: 'upload', label: 'Upload documents', icon: 'upload' },
-    { key: 'ask', label: 'Ask HeyDoc', icon: 'chat' },
-    { key: 'appointments', label: 'Appointments', icon: 'calendar' },
-    { key: 'queue', label: 'My queue', icon: 'clock' },
-  ];
-
-  return (
-    <Shell role="patient" userName={user.name} nav={nav} active={page} onNav={setPage} onLogout={onLogout}>
-      {page === 'dashboard' && <PatientDashboard docs={docs} appts={myAppts} onNav={setPage} />}
-      {page === 'upload' && <PatientUpload myDocs={myDocs} careTeamDocs={careTeamDocs} />}
-      {page === 'ask' && <AskHeyDoc patientId={user.id} />}
-      {page === 'appointments' && <PatientAppointments appts={myAppts} />}
-      {page === 'queue' && <PatientQueue appts={myAppts} />}
-    </Shell>
-  );
-}
-
 function StatCard({ icon, label, value, sub, color }) {
   return (
     <Card style={{ flex: 1 }}>
@@ -500,21 +655,98 @@ function PatientDashboard({ docs, appts, onNav }) {
   );
 }
 
-function DocRow({ doc }) {
+function DocRow({ doc, onOpen }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 0', borderBottom: `1px solid ${T.ink100}` }}>
+    <div
+      onClick={() => onOpen && onOpen(doc)}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 12, padding: '12px 4px', borderBottom: `1px solid ${T.ink100}`,
+        cursor: onOpen ? 'pointer' : 'default', borderRadius: 8, transition: 'background .12s',
+      }}
+      onMouseEnter={e => { if (onOpen) e.currentTarget.style.background = T.cream; }}
+      onMouseLeave={e => { if (onOpen) e.currentTarget.style.background = 'transparent'; }}
+    >
       <Icon name="file" size={17} color={T.ink500} />
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ fontSize: 13.5, fontWeight: 600, color: T.ink900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
         <div style={{ fontSize: 12, color: T.ink500 }}>{doc.date}</div>
       </div>
       <SemanticTag type={doc.semantic_type} />
+      {onOpen && <Icon name="chevronRight" size={15} color={T.ink300} />}
+    </div>
+  );
+}
+
+/* Document preview / open modal.
+   IMPORTANT: this is a UI-only shell. There is currently no backend route
+   that serves the actual uploaded file bytes — /documents/{patient_id}
+   only returns metadata rows (id, file_name, doc_type, ...), and the files
+   themselves live on disk under ingestion.UPLOAD_DIR / patient_id / file_name
+   with no endpoint exposing them. That's *why* nothing opened before: there
+   was no click handler, and even a click handler would have had no URL to
+   point to. See the server.py note — add a GET /documents/file/{document_id}
+   route that returns a FileResponse, then swap `fileUrl` below for
+   `/documents/file/${doc.id}` (or a signed URL).
+*/
+function DocumentViewerModal({ doc, onClose }) {
+  if (!doc) return null;
+  const ext = (doc.name.split('.').pop() || '').toLowerCase();
+  const isImage = ['png', 'jpg', 'jpeg', 'webp'].includes(ext);
+  const isPdf = ext === 'pdf';
+  // Real wiring: const fileUrl = `/documents/file/${doc.id}`;
+  const fileUrl = doc.fileUrl || null;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, background: 'rgba(28,36,32,0.45)', zIndex: 1000,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24,
+      }}
+    >
+      <div onClick={e => e.stopPropagation()} style={{
+        background: T.white, borderRadius: 16, width: 'min(680px, 100%)', maxHeight: '85vh',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden', boxShadow: '0 20px 60px rgba(0,0,0,0.25)',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', borderBottom: `1px solid ${T.ink100}` }}>
+          <div style={{ width: 36, height: 36, borderRadius: 9, background: T.teal50, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <Icon name="file" size={17} color={T.teal700} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 14.5, fontWeight: 700, color: T.ink900, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{doc.name}</div>
+            <div style={{ fontSize: 12, color: T.ink500 }}>{doc.date}{doc.semantic_type ? ` · ${(SEMANTIC[doc.semantic_type] || {}).label || doc.semantic_type}` : ''}</div>
+          </div>
+          <button onClick={onClose} style={{ background: T.cream, border: 'none', borderRadius: 8, width: 30, height: 30, cursor: 'pointer', color: T.ink500, fontSize: 16, lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: 20, background: T.cream }}>
+          {fileUrl && isImage ? (
+            <img src={fileUrl} alt={doc.name} style={{ width: '100%', borderRadius: 10, display: 'block' }} />
+          ) : fileUrl && isPdf ? (
+            <iframe src={fileUrl} title={doc.name} style={{ width: '100%', height: 480, border: 'none', borderRadius: 10, background: T.white }} />
+          ) : (
+            <div style={{ textAlign: 'center', padding: '48px 20px' }}>
+              <Icon name="file" size={30} color={T.ink300} />
+              <div style={{ fontWeight: 600, color: T.ink700, marginTop: 12, fontSize: 14 }}>No file preview available yet</div>
+              <div style={{ fontSize: 12.5, color: T.ink500, marginTop: 6, maxWidth: 420, marginLeft: 'auto', marginRight: 'auto' }}>
+                This demo doesn't have a live file-serving endpoint wired up. Once <code style={{ fontSize: 11.5 }}>GET /documents/file/&#123;document_id&#125;</code> is added on the backend, this modal will render the PDF or image inline.
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, padding: '14px 20px', borderTop: `1px solid ${T.ink100}` }}>
+          <Button variant="ghost" onClick={onClose}>Close</Button>
+          {fileUrl && <Button onClick={() => window.open(fileUrl, '_blank')}>Open in new tab</Button>}
+        </div>
+      </div>
     </div>
   );
 }
 
 function PatientUpload({ myDocs, careTeamDocs }) {
   const [dropped, setDropped] = useState(false);
+  const [openDoc, setOpenDoc] = useState(null);
   return (
     <>
       <PageHeader title="Upload documents" sub="HeyDoc will OCR, classify, and chunk your records automatically." />
@@ -533,48 +765,84 @@ function PatientUpload({ myDocs, careTeamDocs }) {
 
       <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Your uploads</div>
       <Card style={{ marginBottom: 24 }}>
-        {myDocs.length ? myDocs.map(d => <DocRow key={d.id} doc={d} />) : <EmptyState icon="file" title="No documents uploaded yet" />}
+        {myDocs.length ? myDocs.map(d => <DocRow key={d.id} doc={d} onOpen={setOpenDoc} />) : <EmptyState icon="file" title="No documents uploaded yet" />}
       </Card>
 
       <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 4 }}>Documents from your care team</div>
       <p style={{ fontSize: 12.5, color: T.ink500, margin: '0 0 10px' }}>Scans, reports, and results uploaded by your doctor, lab, or insurance desk.</p>
       <Card>
-        {careTeamDocs.length ? careTeamDocs.map(d => <DocRow key={d.id} doc={d} />) : <EmptyState icon="file" title="Nothing here yet" />}
+        {careTeamDocs.length ? careTeamDocs.map(d => <DocRow key={d.id} doc={d} onOpen={setOpenDoc} />) : <EmptyState icon="file" title="Nothing here yet" />}
       </Card>
+      <DocumentViewerModal doc={openDoc} onClose={() => setOpenDoc(null)} />
     </>
   );
 }
 
+/* ============================================================
+   Ask HeyDoc — polished chat: confidence badges, collapsible
+   sources, rotating loading states, clinical tone, structured
+   cards for medication-shaped answers.
+   ============================================================ */
 function AskHeyDoc({ patientId }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
-  const suggestions = ['What medications am I currently on?', 'Summarize my recent lab reports', 'What was I prescribed after my surgery?', 'When was my last follow-up?'];
+  const [pending, setPending] = useState(false);
+  const scrollRef = useRef(null);
+  const suggestions = [
+    'What medications am I currently taking?',
+    'Summarize my latest lab report.',
+    'Do I have any allergies?',
+    'Show my medical timeline.',
+    'What surgeries have I undergone?',
+  ];
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, pending]);
 
   function send(text) {
-    if (!text.trim()) return;
-    const userMsg = { role: 'user', text };
-    setMessages(m => [...m, userMsg]);
+    if (!text.trim() || pending) return;
+    setMessages(m => [...m, { role: 'user', text }]);
     setInput('');
+    setPending(true);
+
+    // Mock of the real call:
+    //   const res = await fetch('/chat', { method: 'POST', body: JSON.stringify({ patient_id: patientId, question: text }) });
+    //   const data = await res.json();  // { answer, sources, confidence, verified, route, metadata }
     setTimeout(() => {
+      const isMedQuery = /medicat|prescri|taking/i.test(text);
       setMessages(m => [...m, {
         role: 'assistant',
-        text: `[Mock response — wire to retrieval.rag_query("${patientId}", "${text}", models)]`,
-        sources: [{ name: 'Discharge_Summary_16May.pdf', type: 'discharge_summary' }, { name: 'Prescription_Ceroxim.pdf', type: 'prescription' }],
+        text: isMedQuery ? null : cleanAnswerText(
+          `According to your uploaded records, you were advised to take Supradyn once daily for two weeks. Please consult your healthcare provider before changing any medications.`
+        ),
+        medications: isMedQuery ? [
+          { name: 'Ceroxim-XP 625 mg', date: 'May 2026' },
+          { name: 'Pantop 40 mg', date: 'May 2026' },
+          { name: 'Supradyn', instructions: 'Take once daily for 2 weeks' },
+        ] : null,
+        confidence: isMedQuery ? 88 : 62,
+        verified: isMedQuery,
+        sources: [
+          { name: 'Discharge_Summary_16May.pdf' },
+          { name: 'Prescription_Ceroxim.pdf' },
+        ],
       }]);
-    }, 500);
+      setPending(false);
+    }, 1800);
   }
 
   return (
     <>
       <PageHeader title="Ask HeyDoc" sub="Answers are grounded in your uploaded records, with sources cited." />
-      <Card style={{ minHeight: 380, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1 }}>
+      <Card style={{ minHeight: 420, display: 'flex', flexDirection: 'column' }}>
+        <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', maxHeight: 460 }}>
           {messages.length === 0 ? (
             <div style={{ padding: '20px 0' }}>
               <EmptyState icon="chat" title="How can I help you today?" sub="Ask about medications, diagnoses, lab results, or anything from your records." />
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 16 }}>
                 {suggestions.map(s => (
-                  <button key={s} onClick={() => send(s)} style={{ textAlign: 'left', fontSize: 12.5, padding: '10px 12px', borderRadius: 9, border: `1px solid ${T.ink100}`, background: T.cream, cursor: 'pointer', color: T.ink700 }}>
+                  <button key={s} onClick={() => setInput(s)} style={{ textAlign: 'left', fontSize: 12.5, padding: '10px 12px', borderRadius: 9, border: `1px solid ${T.ink100}`, background: T.cream, cursor: 'pointer', color: T.ink700 }}>
                     {s}
                   </button>
                 ))}
@@ -584,29 +852,35 @@ function AskHeyDoc({ patientId }) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               {messages.map((m, i) => (
                 <div key={i} style={{ alignSelf: m.role === 'user' ? 'flex-end' : 'flex-start', maxWidth: '78%' }}>
-                  <div style={{
-                    background: m.role === 'user' ? T.teal600 : T.cream, color: m.role === 'user' ? '#fff' : T.ink900,
-                    padding: '10px 14px', borderRadius: 12, fontSize: 13.5, lineHeight: 1.5,
-                  }}>
-                    {m.text}
-                  </div>
-                  {m.sources && (
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 }}>
-                      {m.sources.map((s, j) => (
-                        <Badge key={j} bg={T.ink100} fg={T.ink700}><Icon name="file" size={11} /> {s.name}</Badge>
-                      ))}
+                  {m.role === 'user' ? (
+                    <div style={{ background: T.teal600, color: '#fff', padding: '10px 14px', borderRadius: 12, fontSize: 13.5, lineHeight: 1.5 }}>
+                      {m.text}
+                    </div>
+                  ) : (
+                    <div style={{ background: T.cream, color: T.ink900, padding: '12px 14px', borderRadius: 12 }}>
+                      {m.medications ? (
+                        <>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: T.ink700, marginBottom: 8 }}>Current medications</div>
+                          <MedicationCards medications={m.medications} />
+                        </>
+                      ) : (
+                        <div style={{ fontSize: 13.5, lineHeight: 1.6, whiteSpace: 'pre-line' }}>{m.text}</div>
+                      )}
+                      <ConfidenceBadge confidence={m.confidence} verified={m.verified} />
+                      <SourcesDisclosure sources={m.sources} />
+                      <AiNotice />
                     </div>
                   )}
-                  {m.role === 'assistant' && <AiNotice />}
                 </div>
               ))}
+              {pending && <ThinkingBubble />}
             </div>
           )}
         </div>
         <div style={{ display: 'flex', gap: 10, marginTop: 16, borderTop: `1px solid ${T.ink100}`, paddingTop: 16 }}>
           <input style={inputStyle} placeholder="Ask about your medical history..." value={input}
             onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && send(input)} />
-          <Button onClick={() => send(input)}><Icon name="arrowRight" size={15} color="#fff" /></Button>
+          <Button onClick={() => send(input)} disabled={pending}><Icon name="arrowRight" size={15} color="#fff" /></Button>
         </div>
       </Card>
     </>
@@ -715,6 +989,7 @@ function PatientQueue({ appts }) {
    ============================================================ */
 function VaultView({ patientId, emphasize }) {
   const docs = MOCK.documents[patientId] || [];
+  const [openDoc, setOpenDoc] = useState(null);
   const order = emphasize ? ['diagnosis', 'medication_history', 'lab_reports', 'surgical_history', 'follow_up_notes', 'patient_information'] : Object.keys(SEMANTIC);
   const grouped = order.map(t => ({ type: t, docs: docs.filter(d => d.semantic_type === t) })).filter(g => g.docs.length);
   if (!docs.length) return <EmptyState icon="file" title="No records for this patient yet" />;
@@ -723,9 +998,10 @@ function VaultView({ patientId, emphasize }) {
       {grouped.map(g => (
         <div key={g.type} style={{ marginBottom: 18 }}>
           <div style={{ marginBottom: 8 }}><SemanticTag type={g.type} /></div>
-          {g.docs.map(d => <DocRow key={d.id} doc={d} />)}
+          {g.docs.map(d => <DocRow key={d.id} doc={d} onOpen={setOpenDoc} />)}
         </div>
       ))}
+      <DocumentViewerModal doc={openDoc} onClose={() => setOpenDoc(null)} />
     </div>
   );
 }
