@@ -76,6 +76,7 @@ const ICON_PATHS = {
   flask: 'M9 2v6L4 19a2 2 0 0 0 2 3h12a2 2 0 0 0 2-3l-5-11V2M9 14h6',
   building: 'M3 21h18M5 21V7l7-4 7 4v14M9 9h1M9 13h1M14 9h1M14 13h1M9 21v-4h6v4',
   chevronRight: 'M9 18l6-6-6-6',
+  chevronDown: 'M6 9l6 6 6-6',
   arrowRight: 'M5 12h14M12 5l7 7-7 7',
   menu: 'M4 6h16M4 12h16M4 18h16',
   close: 'M18 6 6 18M6 6l12 12',
@@ -119,15 +120,60 @@ function semanticTag(type) {
 
 function docRow(d) {
   return `
-    <div class="doc-row">
+    <div class="doc-row doc-row-clickable" onclick="openDocModal(${attrJson(d)})">
       ${icon('file', 17, 'var(--ink500)')}
       <div class="doc-row-body">
         <div class="doc-row-name">${esc(d.name)}</div>
         <div class="doc-row-date">${esc(d.date)}</div>
       </div>
       ${semanticTag(d.semantic_type)}
+      ${icon('chevronRight', 15, 'var(--ink300)')}
     </div>`;
 }
+
+/* Document preview modal. UI-only shell: there is currently no backend route
+   that serves the actual uploaded file bytes (/documents/{patient_id} only
+   returns metadata rows), so this always falls back to the "no preview"
+   state until a GET /documents/file/{document_id} route exists on the
+   backend and a fileUrl is threaded through here. */
+function documentViewerModalHtml() {
+  const doc = state.openDoc;
+  if (!doc) return '';
+  const ext = (doc.name.split('.').pop() || '').toLowerCase();
+  const isImage = ['png', 'jpg', 'jpeg', 'webp'].includes(ext);
+  const isPdf = ext === 'pdf';
+  const fileUrl = doc.fileUrl || null;
+  const bodyHtml = fileUrl && isImage
+    ? `<img src="${esc(fileUrl)}" alt="${esc(doc.name)}" class="doc-modal-img">`
+    : fileUrl && isPdf
+      ? `<iframe src="${esc(fileUrl)}" title="${esc(doc.name)}" class="doc-modal-iframe"></iframe>`
+      : `
+        <div class="doc-modal-empty">
+          ${icon('file', 30, 'var(--ink300)')}
+          <div class="doc-modal-empty-title">No file preview available yet</div>
+          <div class="doc-modal-empty-sub">This demo doesn't have a live file-serving endpoint wired up yet.</div>
+        </div>`;
+  return `
+    <div class="doc-modal-backdrop" onclick="closeDocModal()">
+      <div class="doc-modal" onclick="event.stopPropagation()">
+        <div class="doc-modal-head">
+          <div class="doc-modal-icon">${icon('file', 17, 'var(--teal700)')}</div>
+          <div style="flex:1;min-width:0">
+            <div class="doc-modal-title">${esc(doc.name)}</div>
+            <div class="doc-modal-sub">${esc(doc.date || '')}${doc.semantic_type ? ` · ${esc((SEMANTIC[doc.semantic_type] || {}).label || doc.semantic_type)}` : ''}</div>
+          </div>
+          <button class="doc-modal-close" onclick="closeDocModal()">×</button>
+        </div>
+        <div class="doc-modal-body">${bodyHtml}</div>
+        <div class="doc-modal-foot">
+          <button class="btn btn-ghost" onclick="closeDocModal()">Close</button>
+          ${fileUrl ? `<button class="btn btn-primary" onclick="window.open(${attrJson(fileUrl)},'_blank')">Open in new tab</button>` : ''}
+        </div>
+      </div>
+    </div>`;
+}
+function openDocModal(doc) { state.openDoc = doc; render(); }
+function closeDocModal() { state.openDoc = null; render(); }
 
 function emptyState(iconName, title, sub) {
   return `
@@ -141,9 +187,89 @@ function emptyState(iconName, title, sub) {
 function aiNotice() {
   return `
     <div class="ai-notice">
-      ${icon('shield', 15, 'var(--amber600)')}
-      <span>AI-assisted information, not a diagnosis. For any concern, please contact your doctor directly.</span>
+      ${icon('shield', 12, 'var(--ink300)')}
+      <span>AI-assisted information. Not a substitute for professional medical advice.</span>
     </div>`;
+}
+
+/* Strips backend/debug artifacts that should never reach the patient: raw
+   patient IDs, "====" separator rules, "Total: N" counters, and collapses
+   stray blank lines left behind once those are removed. Presentation-layer
+   only — does not change what the backend computed. */
+function cleanAnswerText(raw) {
+  if (!raw) return '';
+  return raw
+    .split('\n')
+    .filter(line => {
+      const t = line.trim();
+      if (!t) return true;
+      if (/^=+$/.test(t)) return false;
+      if (/^-+$/.test(t)) return false;
+      if (/^total:\s*\d+$/i.test(t)) return false;
+      if (/^(patient|admission summary|medical timeline|medications|allergies|surgical history)\s*(—|-)\s*(patient_|doctor_)/i.test(t)) return false;
+      if (/^\[[\d]+ event/i.test(t)) return false;
+      return true;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function confidenceTier(pct) {
+  if (pct >= 80) return { emoji: '🟢', label: 'High confidence', bg: 'var(--teal100)', fg: 'var(--teal700)' };
+  if (pct >= 50) return { emoji: '🟡', label: 'Moderate confidence', bg: 'var(--amber100)', fg: 'var(--amber600)' };
+  return { emoji: '🔴', label: 'Needs verification', bg: 'var(--coral100)', fg: 'var(--coral600)' };
+}
+
+function confidenceBadgeHtml(m, idx) {
+  if (m.confidence == null) return '';
+  const tier = confidenceTier(m.confidence);
+  const open = !!m._confidenceOpen;
+  const detail = m.confidence >= 80
+    ? 'Verified against your uploaded records.'
+    : m.confidence >= 50
+      ? 'Some information may require clinical confirmation.'
+      : 'Limited supporting evidence was found — please confirm with your care team.';
+  return `
+    <div class="confidence-wrap">
+      <button class="confidence-badge-btn" style="background:${tier.bg};color:${tier.fg}" onclick="toggleConfidencePopover(${idx})">
+        <span>${tier.emoji}</span><span>${esc(tier.label)}</span>${icon('chevronRight', 12, tier.fg, open ? 'rot-90' : '')}
+      </button>
+      ${open ? `
+        <div class="confidence-popover">
+          <div class="confidence-popover-head"><span>Reliability</span><span>${m.confidence.toFixed(0)}%</span></div>
+          <div>${detail}</div>
+          <div class="confidence-popover-verified" style="color:${m.verified ? 'var(--teal700)' : 'var(--amber600)'}">
+            ${m.verified ? '✓ Cross-checked against source records' : '⚠ Could not be fully cross-checked'}
+          </div>
+        </div>` : ''}
+    </div>`;
+}
+function toggleConfidencePopover(idx) {
+  const m = state.ask.messages[idx];
+  if (m) m._confidenceOpen = !m._confidenceOpen;
+  render();
+}
+
+function sourcesDisclosureHtml(m, idx) {
+  if (!m.sources || !m.sources.length) return '';
+  const open = !!m._sourcesOpen;
+  return `
+    <div class="sources-wrap">
+      <button class="sources-toggle-btn" onclick="toggleSourcesDisclosure(${idx})">
+        ${icon(open ? 'chevronDown' : 'chevronRight', 13, 'var(--ink500)')}
+        View supporting records (${m.sources.length})
+      </button>
+      ${open ? `
+        <div class="sources-list">
+          ${m.sources.map(s => `<div class="source-item">${icon('file', 13, 'var(--ink500)')}${esc(s.name)}</div>`).join('')}
+        </div>` : ''}
+    </div>`;
+}
+function toggleSourcesDisclosure(idx) {
+  const m = state.ask.messages[idx];
+  if (m) m._sourcesOpen = !m._sourcesOpen;
+  render();
 }
 
 function pageHeader(title, sub) {
@@ -202,6 +328,7 @@ const state = {
   needsReview: [],         // admin's flagged checklist items, hospital-scoped
   redeemResult: null,
   redeemError: null,
+  openDoc: null,           // document object currently shown in the preview modal, or null
 };
 
 const CHECKIN_WINDOW_MINUTES = 30; // mirrors server.py's CHECKIN_WINDOW_MINUTES
@@ -668,7 +795,7 @@ function render() {
     ensureDoctors();
     const apps = { patient: renderPatientApp, doctor: renderDoctorApp, tpa: renderTpaApp, lab: renderLabApp, admin: renderAdminApp };
     const fn = apps[state.user.role] || renderPatientApp;
-    root.innerHTML = fn();
+    root.innerHTML = fn() + documentViewerModalHtml();
   }
 
   if (saved && saved.id) {
@@ -721,6 +848,7 @@ function logout() {
   state.needsReview = [];
   state.redeemResult = null;
   state.redeemError = null;
+  state.openDoc = null;
   _docsFetchedFor.clear();
   _apptsFetchedFor.clear();
   _admissionFetchedFor.clear();
@@ -1078,7 +1206,7 @@ async function sendAsk(presetText) {
     if (!res.ok) throw new Error(data.detail || 'Chat request failed');
     state.ask.messages.push({
       role: 'assistant',
-      text: data.answer,
+      text: cleanAnswerText(data.answer),
       sources: data.sources,
       confidence: data.confidence,
       verified: data.verified,
@@ -1111,11 +1239,11 @@ function renderAskHeyDoc() {
       </div>`;
   } else {
     body = `<div class="chat-messages">
-      ${messages.map(m => `
+      ${messages.map((m, i) => `
         <div class="chat-msg ${m.role}">
           <div class="chat-bubble ${m.role}">${esc(m.text)}</div>
-          ${m.sources && m.sources.length ? `<div class="chat-sources">${m.sources.map(s => badge(`${icon('file', 11)} ${esc(s.name)}`, 'var(--ink100)', 'var(--ink700)')).join('')}</div>` : ''}
-          ${m.role === 'assistant' && m.confidence !== undefined ? `<div style="font-size:11.5px;color:var(--ink500);margin-top:6px">Confidence: ${m.confidence}% · ${m.verified ? 'verified against records' : 'not fully verified'}</div>` : ''}
+          ${m.role === 'assistant' ? confidenceBadgeHtml(m, i) : ''}
+          ${m.role === 'assistant' ? sourcesDisclosureHtml(m, i) : ''}
           ${m.role === 'assistant' ? aiNotice() : ''}
         </div>`).join('')}
       ${state.ask.thinking ? `
