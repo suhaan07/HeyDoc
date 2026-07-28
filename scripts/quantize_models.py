@@ -4,7 +4,7 @@ the embedder and reranker, and push them to Hugging Face Hub.
 
 Run once by hand: python scripts/quantize_models.py
 Never executed by the deployed app — server.py/ingestion.py/retrieval.py
-only ever *load* the resulting Hub repos when THEARCH_QUANTIZED=1.
+only ever *load* the resulting Hub repos when HEYDOC_QUANTIZED=1.
 """
 import os
 import tempfile

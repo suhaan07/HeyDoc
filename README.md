@@ -1,11 +1,11 @@
-# HeyDoc (TheArch)
+# HeyDoc
 
 A healthcare RAG application built for an IIT KGP hackathon, by a 2-person
 team. Patients keep a single longitudinal medical vault; doctors, labs,
 TPAs (insurance desks), and hospital admins interact with that vault
 according to real hospital-style access rules.
 
-**Live**: [frontend](https://suhaan07.github.io/TheArch/) ·
+**Live**: [frontend](https://suhaan07.github.io/HeyDoc/) ·
 backend on Railway (`backend-production-239e.up.railway.app`)
 
 ---
@@ -143,11 +143,11 @@ currently broken (repo access lost from Railway's side), so deploys go
 through `railway up` directly rather than deploy-on-push.
 
 **Quantization infra** (`scripts/quantize_models.py`, the
-`THEARCH_QUANTIZED` env var in `ingestion.py`/`retrieval.py`): built during
+`HEYDOC_QUANTIZED` env var in `ingestion.py`/`retrieval.py`): built during
 an earlier phase when the backend ran on Railway's free 1024MB tier and the
 full model stack (~3.5GB) didn't fit. After upgrading to the Hobby plan
 with more memory, this is no longer needed and is currently dormant —
-`THEARCH_QUANTIZED` is unset in production, so the code path it gates
+`HEYDOC_QUANTIZED` is unset in production, so the code path it gates
 never runs. Left in place rather than deleted in case memory constraints
 come up again.
 

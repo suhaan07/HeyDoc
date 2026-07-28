@@ -1,5 +1,5 @@
 """
-TheArch — Ingestion Pipeline
+HeyDoc — Ingestion Pipeline
 ============================
 Full document ingestion pipeline: OCR → classify → extract → chunk → embed → store.
 
@@ -24,11 +24,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# THEARCH_DATA_DIR lets this run locally (FastAPI/server.py) or in Colab —
-# set it to "/content/drive/MyDrive/TheArch" in a Colab notebook to keep the
+# HEYDOC_DATA_DIR lets this run locally (FastAPI/server.py) or in Colab —
+# set it to "/content/drive/MyDrive/HeyDoc" in a Colab notebook to keep the
 # old persistent-to-Drive behaviour; defaults to a local folder otherwise.
+# THEARCH_DATA_DIR is read as a fallback for environments not yet migrated
+# to the HeyDoc-named variable.
 
-DRIVE_BASE  = Path(os.environ.get("THEARCH_DATA_DIR", Path(__file__).resolve().parent / "data"))
+DRIVE_BASE  = Path(os.environ.get("HEYDOC_DATA_DIR") or os.environ.get("THEARCH_DATA_DIR") or Path(__file__).resolve().parent / "data")
 CHROMA_DIR  = DRIVE_BASE / "chroma_db"
 UPLOAD_DIR  = DRIVE_BASE / "uploads"
 LOCAL_BASE  = DRIVE_BASE / "scratch"
@@ -38,11 +40,12 @@ CHUNK_SIZE             = 384
 CHUNK_OVERLAP          = 48
 EMBED_MODEL_NAME       = "BAAI/bge-large-en-v1.5"
 # INT8-quantized ONNX copy of the same model — used in production instead
-# (THEARCH_QUANTIZED=1) to fit Railway's memory limit. Same weights, lower
+# (HEYDOC_QUANTIZED=1) to fit Railway's memory limit. Same weights, lower
 # precision; `.encode()` behaves identically. Local dev never touches this.
 EMBED_MODEL_NAME_QUANTIZED = "suhaan7988/bge-large-en-v1.5-int8-onnx"
 EMBED_BATCH_SIZE       = 32
-CHROMA_COLLECTION      = "thearch_docs"
+CHROMA_COLLECTION      = "heydoc_docs"
+_LEGACY_CHROMA_COLLECTION = "thearch_docs"  # pre-rename name — migrated in place on first load
 
 DOCTR_CONF_THRESHOLD   = 0.80   # below this → escalate to Gemini
 DOCTR_MIN_CHARS        = 30     # below this → docTR effectively failed
@@ -87,7 +90,7 @@ def init(gemini_api_key: str) -> dict:
     ocr_model = ocr_predictor(pretrained=True)
     print("  docTR OK")
 
-    if os.environ.get("THEARCH_QUANTIZED") == "1":
+    if (os.environ.get("HEYDOC_QUANTIZED") or os.environ.get("THEARCH_QUANTIZED")) == "1":
         print(f"Loading embedder, quantized ({EMBED_MODEL_NAME_QUANTIZED})...")
         embedder = SentenceTransformer(
             EMBED_MODEL_NAME_QUANTIZED, backend="onnx",
@@ -104,10 +107,21 @@ def init(gemini_api_key: str) -> dict:
         path=str(CHROMA_DIR),
         settings=Settings(anonymized_telemetry=False),
     )
-    collection = chroma_client.get_or_create_collection(
-        name=CHROMA_COLLECTION,
-        metadata={"hnsw:space": "cosine"},
-    )
+    try:
+        collection = chroma_client.get_collection(name=CHROMA_COLLECTION)
+    except Exception:
+        # First load after the thearch_docs -> heydoc_docs rename: migrate the
+        # existing collection in place (metadata-only, no re-embedding) rather
+        # than creating a fresh empty one under the new name.
+        try:
+            collection = chroma_client.get_collection(name=_LEGACY_CHROMA_COLLECTION)
+            collection.modify(name=CHROMA_COLLECTION)
+            print(f"  Migrated ChromaDB collection {_LEGACY_CHROMA_COLLECTION!r} -> {CHROMA_COLLECTION!r}")
+        except Exception:
+            collection = chroma_client.get_or_create_collection(
+                name=CHROMA_COLLECTION,
+                metadata={"hnsw:space": "cosine"},
+            )
     print(f"  ChromaDB ready — {collection.count()} existing chunks")
 
     # http2=False: seen in production (not locally, where h2 isn't installed)

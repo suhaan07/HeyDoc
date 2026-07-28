@@ -1,5 +1,5 @@
 """
-TheArch — Confidence-Aware OCR Preprocessing Pipeline  (v5)
+HeyDoc — Confidence-Aware OCR Preprocessing Pipeline  (v5)
 =============================================================
 Core design change from v4
 --------------------------

@@ -50,7 +50,10 @@ import admission as admission_engine
 
 load_dotenv()
 
-DB_PATH = os.path.join(os.environ.get("THEARCH_DATA_DIR", os.path.dirname(__file__)), "heydoc.db")
+DB_PATH = os.path.join(
+    os.environ.get("HEYDOC_DATA_DIR") or os.environ.get("THEARCH_DATA_DIR") or os.path.dirname(__file__),
+    "heydoc.db",
+)
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 VALID_ROLES = {"patient", "doctor", "tpa", "lab", "admin"}
 

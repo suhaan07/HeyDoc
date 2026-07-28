@@ -1,5 +1,5 @@
 """
-TheArch — Imaging Pipeline
+HeyDoc — Imaging Pipeline
 ==========================
 Handles raw medical scan *images* (X-ray, CT, MRI, ultrasound pixel data).
 This is distinct from ingestion.py which handles text-based imaging *reports*.

@@ -1,5 +1,5 @@
 """
-TheArch — Retrieval Pipeline (Phase 2)
+HeyDoc — Retrieval Pipeline (Phase 2)
 =======================================
 Hybrid RAG: vector search (bge-large cosine) + BM25 keyword search
 → RRF fusion → cross-encoder reranking → Gemini 2.5 Flash generation.
@@ -179,7 +179,7 @@ def _normalize_query(query: str) -> str:
 
 RERANKER_MODEL_NAME = "BAAI/bge-reranker-v2-m3"
 # INT8-quantized ONNX copy — see ingestion.EMBED_MODEL_NAME_QUANTIZED for the
-# same rationale (production-only, gated by THEARCH_QUANTIZED=1).
+# same rationale (production-only, gated by HEYDOC_QUANTIZED=1).
 RERANKER_MODEL_NAME_QUANTIZED = "suhaan7988/bge-reranker-v2-m3-int8-onnx"
 
 
@@ -189,7 +189,7 @@ def init_reranker(models: dict) -> None:
     Call once after ingestion.init(); models dict is extended in-place.
     """
     from sentence_transformers import CrossEncoder
-    if os.environ.get("THEARCH_QUANTIZED") == "1":
+    if (os.environ.get("HEYDOC_QUANTIZED") or os.environ.get("THEARCH_QUANTIZED")) == "1":
         print(f"Loading reranker, quantized ({RERANKER_MODEL_NAME_QUANTIZED})...")
         models["reranker"] = CrossEncoder(
             RERANKER_MODEL_NAME_QUANTIZED, backend="onnx",
