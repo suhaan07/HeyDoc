@@ -89,6 +89,12 @@ function esc(str) {
   return String(str ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+// Escapes HTML, then renders **bold** markdown spans (the only markdown the
+// chat backend emits) as <strong> instead of leaving literal asterisks.
+function renderInlineMarkdown(str) {
+  return esc(str).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+}
+
 // Safe to drop into a double-quoted onclick="..." attribute as a JS string literal.
 function attrJson(value) {
   return esc(JSON.stringify(value));
@@ -213,42 +219,6 @@ function cleanAnswerText(raw) {
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-}
-
-function confidenceTier(pct) {
-  if (pct >= 80) return { emoji: '🟢', label: 'High confidence', bg: 'var(--teal100)', fg: 'var(--teal700)' };
-  if (pct >= 50) return { emoji: '🟡', label: 'Moderate confidence', bg: 'var(--amber100)', fg: 'var(--amber600)' };
-  return { emoji: '🔴', label: 'Needs verification', bg: 'var(--coral100)', fg: 'var(--coral600)' };
-}
-
-function confidenceBadgeHtml(m, idx) {
-  if (m.confidence == null) return '';
-  const tier = confidenceTier(m.confidence);
-  const open = !!m._confidenceOpen;
-  const detail = m.confidence >= 80
-    ? 'Verified against your uploaded records.'
-    : m.confidence >= 50
-      ? 'Some information may require clinical confirmation.'
-      : 'Limited supporting evidence was found — please confirm with your care team.';
-  return `
-    <div class="confidence-wrap">
-      <button class="confidence-badge-btn" style="background:${tier.bg};color:${tier.fg}" onclick="toggleConfidencePopover(${idx})">
-        <span>${tier.emoji}</span><span>${esc(tier.label)}</span>${icon('chevronRight', 12, tier.fg, open ? 'rot-90' : '')}
-      </button>
-      ${open ? `
-        <div class="confidence-popover">
-          <div class="confidence-popover-head"><span>Reliability</span><span>${m.confidence.toFixed(0)}%</span></div>
-          <div>${detail}</div>
-          <div class="confidence-popover-verified" style="color:${m.verified ? 'var(--teal700)' : 'var(--amber600)'}">
-            ${m.verified ? '✓ Cross-checked against source records' : '⚠ Could not be fully cross-checked'}
-          </div>
-        </div>` : ''}
-    </div>`;
-}
-function toggleConfidencePopover(idx) {
-  const m = state.ask.messages[idx];
-  if (m) m._confidenceOpen = !m._confidenceOpen;
-  render();
 }
 
 function sourcesDisclosureHtml(m, idx) {
@@ -1241,8 +1211,7 @@ function renderAskHeyDoc() {
     body = `<div class="chat-messages">
       ${messages.map((m, i) => `
         <div class="chat-msg ${m.role}">
-          <div class="chat-bubble ${m.role}">${esc(m.text)}</div>
-          ${m.role === 'assistant' ? confidenceBadgeHtml(m, i) : ''}
+          <div class="chat-bubble ${m.role}">${renderInlineMarkdown(m.text)}</div>
           ${m.role === 'assistant' ? sourcesDisclosureHtml(m, i) : ''}
           ${m.role === 'assistant' ? aiNotice() : ''}
         </div>`).join('')}

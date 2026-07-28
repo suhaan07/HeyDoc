@@ -1123,8 +1123,7 @@ def _format_medications_answer(result: dict) -> str:
         "",
     ]
     for m in meds:
-        date_part = f"  [{m['date']}]" if m.get("date") else ""
-        lines.append(f"  • {m['name']}{date_part}  (from: {m['source']})")
+        lines.append(f"  • {m['name']}")
     return "\n".join(lines)
 
 

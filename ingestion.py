@@ -440,7 +440,33 @@ _DATE_PATTERNS = [
     r"\b(\d{1,2})[\-/\.](\d{1,2})[\-/\.](\d{2,4})\b",
     r"\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b",
 ]
-_DRUG_PAT      = re.compile(r"\b(?:tab|cap|inj|syp|syr|susp|oint|gel|drops?)\.?\s+([A-Za-z][\w\-]+(?:\s+\d+\s*mg)?)", re.IGNORECASE)
+
+# Anchored to the start of a line (optionally after a bullet marker) so that
+# a dosage-unit mention later in the same line — e.g. "...625 mg 1 TAB twice
+# daily" — doesn't get misread as a second "Tab <drug>" prefix, which used to
+# capture the following word ("twice") as a fake drug name.
+_DRUG_PAT = re.compile(
+    r"^\s*[o•\-\*]?\s*(?:tab|cap|inj|syp|syr|susp|oint|gel|drops?)\.?\s+"
+    r"([A-Za-z][\w\-]+(?:\s+\d+\s*mg)?)(.*)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_FREQUENCY_PAT = re.compile(
+    r"\b(once daily|twice daily|thrice daily|once a day|twice a day|thrice a day|"
+    r"bd|od|tds|qid|sos|stat|hs|prn|once|twice|thrice)\b",
+    re.IGNORECASE,
+)
+_FREQUENCY_ABBR = {"bd", "od", "tds", "qid", "sos", "stat", "hs", "prn"}
+
+
+def _extract_frequency(line_remainder: str) -> Optional[str]:
+    """Pull a dosage-frequency phrase (e.g. "twice daily", "bd") out of the
+    text following a matched drug name on the same line."""
+    m = _FREQUENCY_PAT.search(line_remainder)
+    if not m:
+        return None
+    freq = m.group(1).lower()
+    return freq.upper() if freq in _FREQUENCY_ABBR else freq[:1].upper() + freq[1:]
+
 _DOCTOR_PAT    = re.compile(r"\bDr\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})")
 _HOSPITAL_PAT  = re.compile(r"\b([A-Z][\w\s]+(?:Hospital|Medical|Clinic|Centre|Center|Institute)[\w\s]*)\b")
 _DIAGNOSIS_PAT = re.compile(r"(?:diagnosis|impression|final diagnosis|assessment)[:\s]+([^\n]{5,120})", re.IGNORECASE)
@@ -466,8 +492,10 @@ def extract_fields(text: str, doc_type: str) -> ExtractedFields:
     if doc_type in {"prescription", "discharge_summary", "operative_notes"}:
         for m in _DRUG_PAT.finditer(text):
             drug = m.group(1).strip()
-            if drug not in ef.drugs:
-                ef.drugs.append(drug)
+            freq = _extract_frequency(m.group(2))
+            entry = f"{drug} — {freq}" if freq else drug
+            if entry not in ef.drugs:
+                ef.drugs.append(entry)
     if doc_type == "lab_report":
         for m in _LAB_VAL_PAT.finditer(text):
             key = m.group(1).strip().lower()
