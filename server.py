@@ -27,6 +27,7 @@ import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import qrcode
 
@@ -80,6 +81,20 @@ SCAN_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff"}
 # enough real started_at/completed_at history to compute an actual average.
 AVG_CONSULT_MINUTES = {"follow_up": 10, "new": 20, "admission": 30}
 CHECKIN_WINDOW_MINUTES = 30  # check-in opens this many minutes before the slot
+
+# Appointment times are stored as naive strings straight from the patient's
+# browser wall clock (always IST for this app — see frontend), with no
+# timezone conversion. datetime.datetime.now() must NOT be used to compare
+# against them: it returns the server process's OS clock, which is IST on a
+# local dev machine but UTC on Railway's containers — comparing a Railway
+# UTC "now" against an IST-naive appointment time silently breaks every
+# time-window check (e.g. by ~5.5h in IST) whenever this runs in production.
+_IST = ZoneInfo("Asia/Kolkata")
+
+
+def now_ist() -> datetime.datetime:
+    """Naive local wall-clock 'now' in IST, independent of the server's own OS timezone."""
+    return datetime.datetime.now(_IST).replace(tzinfo=None)
 
 app = FastAPI(title="HeyDoc API")
 app.add_middleware(
@@ -504,7 +519,7 @@ def update_appointment_status(appointment_id: str, req: AppointmentStatusUpdate)
     with get_db() as conn:
         if not conn.execute("SELECT id FROM appointments WHERE id = ?", (appointment_id,)).fetchone():
             raise HTTPException(404, "appointment not found")
-        now = datetime.datetime.now().isoformat()
+        now = now_ist().isoformat()
         if req.status == "in_consultation":
             conn.execute("UPDATE appointments SET status = ?, started_at = ? WHERE id = ?", (req.status, now, appointment_id))
         elif req.status == "completed":
@@ -524,18 +539,17 @@ def check_in_appointment(appointment_id: str):
         if row["status"] != "accepted":
             raise HTTPException(400, f"can only check in from 'accepted' status (current: {row['status']})")
 
-        # Appointment times and datetime.now() are both naive local-clock values
-        # (the frontend sends `${date}T${time}:00` straight from the patient's
-        # wall clock, no timezone conversion anywhere) — directly comparable.
-        # NOTE: this was originally written against utcnow(), which silently
-        # broke the check-in window by the server's UTC offset (e.g. ~5.5h in
-        # IST) — utcnow() must never be mixed with these naive-local values.
+        # Appointment times are naive IST wall-clock values (the frontend sends
+        # `${date}T${time}:00` straight from the patient's local clock, no
+        # timezone conversion anywhere) — compare against now_ist(), not
+        # datetime.now(), since the server process's own OS clock is UTC on
+        # Railway (see now_ist() docstring above).
         appt_time = datetime.datetime.fromisoformat(row["time"])
-        mins_until = (appt_time - datetime.datetime.now()).total_seconds() / 60
+        mins_until = (appt_time - now_ist()).total_seconds() / 60
         if mins_until > CHECKIN_WINDOW_MINUTES:
             raise HTTPException(400, f"check-in opens {CHECKIN_WINDOW_MINUTES} minutes before your appointment")
 
-        now = datetime.datetime.now().isoformat()
+        now = now_ist().isoformat()
         conn.execute(
             "UPDATE appointments SET status = 'checked_in', checked_in_at = ? WHERE id = ?",
             (now, appointment_id),
@@ -703,7 +717,7 @@ def _run_admission_verification(admission_id: str) -> list[dict]:
         results = admission_engine.verify_admission(admission_dict, documents, models)
 
         conn.execute("DELETE FROM admission_checklist_items WHERE admission_id = ?", (admission_id,))
-        now = datetime.datetime.now().isoformat()
+        now = now_ist().isoformat()
         for r in results:
             conn.execute(
                 """

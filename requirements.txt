@@ -36,6 +36,11 @@ email-validator
 python-multipart
 python-dotenv
 
+# IANA timezone database for zoneinfo — needed so server.py's IST "now" helper
+# works regardless of the host OS (Windows dev machines and slim Linux
+# containers alike don't ship a system tzdata).
+tzdata
+
 # Image processing (doctr + Gemini Vision + imaging pipeline)
 Pillow
 

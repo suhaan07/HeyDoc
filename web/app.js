@@ -1357,6 +1357,9 @@ function renderPatientQueue(appts) {
           <div style="font-size:12.5px;color:var(--ink500);margin-top:2px">Opens in ${mins - CHECKIN_WINDOW_MINUTES} min</div>
         </div>`;
     } else {
+      // Clear a stale "too early" error left over from an earlier attempt —
+      // it no longer applies now that the window is open.
+      state.queueError = null;
       box = `<button class="btn btn-primary btn-block" onclick="checkInNow('${next.id}','${state.user.id}')">Check in now</button>`;
     }
   }
